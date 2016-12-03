@@ -48,10 +48,19 @@
 ;; - rownames
 ;; - rowname-names
 ;;
+;;
+;; Engines supported:
+;; - mysql
+;; - dbi
+;; - mssql
+;; - sqsh
+;; - postgresql
+;; - oracle
+;;
 ;; TODO:
 ;;
 ;; - support for sessions
-;; - support for more engines (currently only supports mysql)
+;; - support for more engines
 ;; - what's a reasonable way to drop table data into SQL?
 ;;
 
@@ -66,13 +75,13 @@
 (defvar org-babel-default-header-args:sql '())
 
 (defconst org-babel-header-args:sql
-  '((engine	       . :any)
-    (out-file	       . :any)
-    (dbhost	       . :any)
-    (dbport	       . :any)
-    (dbuser	       . :any)
-    (dbpassword	       . :any)
-    (database	       . :any))
+  '((engine	.	:any)
+    (out-file	.	:any)
+    (dbhost	.	:any)
+    (dbport	.	:any)
+    (dbuser	.	:any)
+    (dbpassword	.	:any)
+    (database	.	:any))
   "SQL-specific header arguments.")
 
 (defun org-babel-expand-body:sql (body params)
@@ -95,9 +104,9 @@
 Pass nil to omit that arg."
   (combine-and-quote-strings
    (delq nil
-	 (list (when host (concat "-h" host))
-	       (when port (format "-p%d" port))
-	       (when user (concat "-U" user))
+	 (list (when host     (concat "-h" host))
+	       (when port     (format "-p%d" port))
+	       (when user     (concat "-U" user))
 	       (when database (concat "-d" database))))))
 
 (defun org-babel-sql-dbstring-oracle (host port user password database)
@@ -110,11 +119,22 @@ Pass nil to omit that arg."
 SQL Server on Windows and Linux platform."
   (mapconcat #'identity
 	     (delq nil
-		   (list (when host (format "-S \"%s\"" host))
-			 (when user (format "-U \"%s\"" user))
+		   (list (when host     (format "-S \"%s\"" host))
+			 (when user     (format "-U \"%s\"" user))
 			 (when password (format "-P \"%s\"" password))
 			 (when database (format "-d \"%s\"" database))))
 	     " "))
+
+(defun org-babel-sql-dbstring-sqsh (host user password database)
+  "Make sqsh commmand line args for database connection.
+\"sqsh\" is one method to access Sybase or MS SQL via Linux platform"
+  (mapconcat #'identity
+             (delq nil
+                   (list  (when host     (format "-S \"%s\"" host))
+                          (when user     (format "-U \"%s\"" user))
+                          (when password (format "-P \"%s\"" password))
+                          (when database (format "-D \"%s\"" database))))
+             " "))
 
 (defun org-babel-sql-convert-standard-filename (file)
   "Convert the file name to OS standard.
@@ -141,14 +161,14 @@ This function is called by `org-babel-execute-src-block'."
          (in-file (org-babel-temp-file "sql-in-"))
          (out-file (or (cdr (assq :out-file params))
                        (org-babel-temp-file "sql-out-")))
-	 (header-delim "")
+         (header-delim "")
          (command (pcase (intern engine)
-                    (`dbi (format "dbish --batch %s < %s | sed '%s' > %s"
+		    (`dbi (format "dbish --batch %s < %s | sed '%s' > %s"
 				  (or cmdline "")
 				  (org-babel-process-file-name in-file)
 				  "/^+/d;s/^|//;s/(NULL)/ /g;$d"
 				  (org-babel-process-file-name out-file)))
-                    (`monetdb (format "mclient -f tab %s < %s > %s"
+		    (`monetdb (format "mclient -f tab %s < %s > %s"
 				      (or cmdline "")
 				      (org-babel-process-file-name in-file)
 				      (org-babel-process-file-name out-file)))
@@ -160,7 +180,15 @@ This function is called by `org-babel-execute-src-block'."
 				     (org-babel-process-file-name in-file))
 				    (org-babel-sql-convert-standard-filename
 				     (org-babel-process-file-name out-file))))
-                    (`mysql (format "mysql %s %s %s < %s > %s"
+		    (`sqsh (format "sqsh %s %s -i %s -o %s -m csv"
+                        (or cmdline "")
+                        (org-babel-sql-dbstring-sqsh
+                         dbhost dbuser dbpassword database)
+                        (org-babel-sql-convert-standard-filename
+                         (org-babel-process-file-name in-file))
+                        (org-babel-sql-convert-standard-filename
+                         (org-babel-process-file-name out-file))))
+		    (`mysql (format "mysql %s %s %s < %s > %s"
 				    (org-babel-sql-dbstring-mysql
 				     dbhost dbport dbuser dbpassword database)
 				    (if colnames-p "" "-N")
@@ -179,17 +207,17 @@ footer=off -F \"\t\"  %s -f %s -o %s %s"
 				  (org-babel-process-file-name in-file)
 				  (org-babel-process-file-name out-file)
 				  (or cmdline "")))
-                    (`oracle (format
+		    (`oracle (format
 			      "sqlplus -s %s < %s > %s"
 			      (org-babel-sql-dbstring-oracle
 			       dbhost dbport dbuser dbpassword database)
 			      (org-babel-process-file-name in-file)
 			      (org-babel-process-file-name out-file)))
-                    (_ (error "No support for the %s SQL engine" engine)))))
+		    (_ (error "No support for the %s SQL engine" engine)))))
     (with-temp-file in-file
       (insert
        (pcase (intern engine)
-	 (`dbi "/format partbox\n")
+         (`dbi "/format partbox\n")
          (`oracle "SET PAGESIZE 50000
 SET NEWPAGE 0
 SET TAB OFF
@@ -203,18 +231,22 @@ SET MARKUP HTML OFF SPOOL OFF
 SET COLSEP '|'
 
 ")
-	 (`mssql "SET NOCOUNT ON
+         ((or `mssql `sqsh ) "SET NOCOUNT ON
 
 ")
-	 (_ ""))
-       (org-babel-expand-body:sql body params)))
+         (_ ""))
+       (org-babel-expand-body:sql body params)
+       ;; sqsh requires "go" inserted at EOF
+       (if (equal (intern engine) `sqsh)
+           "\ngo"
+         "")))
     (org-babel-eval command "")
     (org-babel-result-cond result-params
       (with-temp-buffer
 	(progn (insert-file-contents-literally out-file) (buffer-string)))
       (with-temp-buffer
 	(cond
-	 ((memq (intern engine) '(dbi mysql postgresql))
+	 ((memq (intern engine) '(dbi mysql postgresql sqsh))
 	  ;; Add header row delimiter after column-names header in first line
 	  (cond
 	   (colnames-p
@@ -239,7 +271,10 @@ SET COLSEP '|'
 	      (goto-char (point-max))
 	      (forward-char -1))
 	    (write-file out-file))))
-	(org-table-import out-file '(16))
+	(cond ((equal (intern engine) 'sqsh)
+	       (org-table-import out-file '(4)))
+	      (t
+	       (org-table-import out-file '(16))))
 	(org-babel-reassemble-table
 	 (mapcar (lambda (x)
 		   (if (string= (car x) header-delim)
