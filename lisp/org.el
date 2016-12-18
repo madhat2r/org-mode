@@ -4462,8 +4462,10 @@ After a match, the match groups contain these elements:
 3  The leading marker like * or /, indicating the type of highlighting
 4  The text between the emphasis markers, not including the markers
 5  The character after the match, empty at the end of a line")
+
 (defvar org-verbatim-re nil
   "Regular expression for matching verbatim text.")
+
 (defvar org-emphasis-regexp-components) ; defined just below
 (defvar org-emphasis-alist) ; defined just below
 (defun org-set-emph-re (var val)
@@ -4472,54 +4474,17 @@ After a match, the match groups contain these elements:
   (when (and (boundp 'org-emphasis-alist)
 	     (boundp 'org-emphasis-regexp-components)
 	     org-emphasis-alist org-emphasis-regexp-components)
-    (let* ((e org-emphasis-regexp-components)
-	   (pre (car e))
-	   (post (nth 1 e))
-	   (border (nth 2 e))
-	   (body (nth 3 e))
-	   (nl (nth 4 e))
-	   (body1 (concat body "*?"))
-	   (markers (mapconcat 'car org-emphasis-alist ""))
-	   (vmarkers (mapconcat
-		      (lambda (x) (if (eq (nth 2 x) 'verbatim) (car x) ""))
-		      org-emphasis-alist "")))
-      ;; make sure special characters appear at the right position in the class
-      (if (string-match "\\^" markers)
-	  (setq markers (concat (replace-match "" t t markers) "^")))
-      (if (string-match "-" markers)
-	  (setq markers (concat (replace-match "" t t markers) "-")))
-      (if (string-match "\\^" vmarkers)
-	  (setq vmarkers (concat (replace-match "" t t vmarkers) "^")))
-      (if (string-match "-" vmarkers)
-	  (setq vmarkers (concat (replace-match "" t t vmarkers) "-")))
-      (if (> nl 0)
-          (setq body1 (concat body1 "\\(?:\n" body "*?\\)\\{0,"
-                              (int-to-string nl) "\\}")))
-      ;; Make the regexp
-      (setq org-emph-re
-	    (concat "\\([" pre "]\\|^\\)"
-		    "\\("
-		    "\\([" markers "]\\)"
-		    "\\("
-		    "[^" border "]\\|"
-		    "[^" border "]"
-		    body1
-		    "[^" border "]"
-		    "\\)"
-		    "\\3\\)"
-		    "\\([" post "]\\|$\\)"))
-      (setq org-verbatim-re
-	    (concat "\\([" pre "]\\|^\\)"
-		    "\\("
-		    "\\([" vmarkers "]\\)"
-		    "\\("
-		    "[^" border "]\\|"
-		    "[^" border "]"
-		    body1
-		    "[^" border "]"
-		    "\\)"
-		    "\\3\\)"
-		    "\\([" post  "]\\|$\\)")))))
+    (pcase-let*
+	((`(,pre ,post ,border ,body ,nl) org-emphasis-regexp-components)
+	 (body (if (<= nl 0) body
+		 (format "%s*?\\(?:\n%s*?\\)\\{0,%d\\}" body body nl)))
+	 (template
+	  (format (concat "\\([%s]\\|^\\)" ;before markers
+			  "\\(\\([%%s]\\)\\([^%s]\\|[^%s]%s[^%s]\\)\\3\\)"
+			  "\\([%s]\\|$\\)") ;after markers
+		  pre border border body border post)))
+      (setq org-emph-re (format template "*/_+"))
+      (setq org-verbatim-re (format template "=~")))))
 
 ;; This used to be a defcustom (Org <8.0) but allowing the users to
 ;; set this option proved cumbersome.  See this message/thread:
@@ -5876,32 +5841,36 @@ This should be called after the variable `org-link-parameters' has changed."
 
 (defun org-do-emphasis-faces (limit)
   "Run through the buffer and emphasize strings."
-  (let (rtn a)
-    (while (and (not rtn) (re-search-forward org-emph-re limit t))
-      (let* ((border (char-after (match-beginning 3)))
-	     (bre (regexp-quote (char-to-string border))))
-	(when (and (not (= border (char-after (match-beginning 4))))
-		   (not (string-match-p (concat bre ".*" bre)
-					(replace-regexp-in-string
-					 "\n" " "
-					 (substring (match-string 2) 1 -1)))))
-	  (setq rtn t)
-	  (setq a (assoc (match-string 3) org-emphasis-alist))
-	  (font-lock-prepend-text-property (match-beginning 2) (match-end 2)
-					   'face
-					   (nth 1 a))
-	  (and (nth 2 a)
-	       (org-remove-flyspell-overlays-in
-		(match-beginning 0) (match-end 0)))
-	  (add-text-properties (match-beginning 2) (match-end 2)
-			       '(font-lock-multiline t org-emphasis t))
-	  (when org-hide-emphasis-markers
-	    (add-text-properties (match-end 4) (match-beginning 5)
-				 '(invisible org-link))
-	    (add-text-properties (match-beginning 3) (match-end 3)
-				 '(invisible org-link)))))
-      (goto-char (1+ (match-beginning 0))))
-    rtn))
+  (let ((quick-re (format "\\([%s]\\|^\\)\\([~=*/_+]\\)"
+			  (car org-emphasis-regexp-components))))
+    (catch :exit
+      (while (re-search-forward quick-re limit t)
+	(let* ((marker (match-string 2))
+	       (verbatim? (member marker '("~" "="))))
+	  (when (save-excursion
+		  (goto-char (match-beginning 0))
+		  ;; Do not match headline stars.  Do not consider
+		  ;; stars of a headline as closing marker for bold
+		  ;; markup either.
+		  (and (not (looking-at-p org-outline-regexp-bol))
+		       (looking-at (if verbatim? org-verbatim-re org-emph-re))
+		       (not (string-match-p
+			     (concat org-outline-regexp-bol "\\'")
+			     (match-string 0)))))
+	    (pcase-let ((`(,_ ,face ,_) (assoc marker org-emphasis-alist)))
+	      (font-lock-prepend-text-property
+	       (match-beginning 2) (match-end 2) 'face face)
+	      (when verbatim?
+		(org-remove-flyspell-overlays-in
+		 (match-beginning 0) (match-end 0)))
+	      (add-text-properties (match-beginning 2) (match-end 2)
+				   '(font-lock-multiline t org-emphasis t))
+	      (when org-hide-emphasis-markers
+		(add-text-properties (match-end 4) (match-beginning 5)
+				     '(invisible org-link))
+		(add-text-properties (match-beginning 3) (match-end 3)
+				     '(invisible org-link)))
+	      (throw :exit t))))))))
 
 (defun org-emphasize (&optional char)
   "Insert or change an emphasis, i.e. a font like bold or italic.
@@ -7914,15 +7883,38 @@ When NEXT is non-nil, check the next line instead."
 When NEXT is non-nil, check the next line instead."
   (org--line-empty-p 2))
 
+(defun org--blank-before-heading-p (&optional parent)
+  "Non-nil when an empty line should precede a new heading here.
+When optional argument PARENT is non-nil, consider parent
+headline instead of current one."
+  (pcase (assq 'heading org-blank-before-new-entry)
+    (`(heading . auto)
+     (save-excursion
+       (org-with-limited-levels
+        (unless (and (org-before-first-heading-p)
+                     (not (outline-next-heading)))
+          (org-back-to-heading t)
+          (when parent (org-up-heading-safe))
+          (cond ((not (bobp))
+                 (org-previous-line-empty-p))
+		((outline-next-heading)
+		 (org-previous-line-empty-p))
+		;; Ignore trailing spaces on last buffer line.
+		((progn (skip-chars-backward " \t") (bolp))
+		 (org-previous-line-empty-p))
+		(t nil))))))
+    (`(heading . ,value) value)
+    (_ nil)))
+
 (defun org-insert-heading (&optional arg invisible-ok top)
   "Insert a new heading or an item with the same depth at point.
 
-If point is at the beginning of a heading or a list item, insert
-a new heading or a new item above the current one.  When at the
-beginning of a regular line of text, turn it into a heading.
+If point is at the beginning of a heading, insert a new heading
+or a new headline above the current one.  When at the beginning
+of a regular line of text, turn it into a heading.
 
 If point is in the middle of a line, split it and create a new
-headline/item with the text in the current line after point (see
+headline with the text in the current line after point (see
 `org-M-RET-may-split-line' on how to modify this behavior).  As
 a special case, on a headline, splitting can only happen on the
 title itself.  E.g., this excludes breaking stars or tags.
@@ -7946,151 +7938,70 @@ command.
 When optional argument TOP is non-nil, insert a level 1 heading,
 unconditionally."
   (interactive "P")
-  (let ((itemp (and (not top) (org-in-item-p)))
-	(may-split (org-get-alist-option org-M-RET-may-split-line 'headline))
-	(respect-content (or org-insert-heading-respect-content
-			     (equal arg '(4))))
-	(initial-content ""))
-
+  (let* ((blank? (org--blank-before-heading-p (equal arg '(16))))
+	 (level (org-current-level))
+	 (stars (make-string (if (and level (not top)) level 1) ?*)))
     (cond
-
-     ((or (= (buffer-size) 0)
-	  (and (not (save-excursion
-		      (and (ignore-errors (org-back-to-heading invisible-ok))
-			   (org-at-heading-p))))
-	       (or arg (not itemp))))
-      ;; At beginning of buffer or so high up that only a heading
-      ;; makes sense.
-      (cond ((and (bolp) (not respect-content)) (insert "* "))
-	    ((not respect-content)
-	     (unless may-split (end-of-line))
-	     (insert "\n* "))
-	    ((re-search-forward org-outline-regexp-bol nil t)
-	     (beginning-of-line)
-	     (insert "* \n")
-	     (backward-char))
-	    (t (goto-char (point-max))
-	       (insert "\n* ")))
-      (run-hooks 'org-insert-heading-hook))
-
-     ((and itemp (not (member arg '((4) (16)))) (org-insert-item)))
-
+     ((or org-insert-heading-respect-content
+	  (member arg '((4) (16)))
+	  (and (not invisible-ok)
+	       (invisible-p (max (1- (point)) (point-min)))))
+      ;; Position point at the location of insertion.
+      (if (not level)			;before first headline
+	  (org-with-limited-levels (outline-next-heading))
+	;; Make sure we end up on a visible headline if INVISIBLE-OK
+	;; is nil.
+	(org-with-limited-levels (org-back-to-heading invisible-ok))
+	(cond ((equal arg '(16))
+	       (org-up-heading-safe)
+	       (org-end-of-subtree t t))
+	      (t
+	       (org-end-of-subtree t t))))
+      (unless (bolp) (insert "\n"))   ;ensure final newline
+      (unless (and blank? (org-previous-line-empty-p))
+	(org-N-empty-lines-before-current (if blank? 1 0)))
+      (insert stars " \n")
+      (forward-char -1))
+     ;; At a headline...
+     ((org-at-heading-p)
+      (cond ((bolp)
+	     (when blank? (save-excursion (insert "\n")))
+	     (save-excursion (insert stars " \n"))
+	     (unless (and blank? (org-previous-line-empty-p))
+	       (org-N-empty-lines-before-current (if blank? 1 0)))
+	     (end-of-line))
+	    ((and (org-get-alist-option org-M-RET-may-split-line 'headline)
+		  (org-match-line org-complex-heading-regexp)
+		  (org-pos-in-match-range (point) 4))
+	     ;; Grab the text that should moved to the new headline.
+	     ;; Preserve tags.
+	     (let ((split (delete-and-extract-region (point) (match-end 4))))
+	       (if (looking-at "[ \t]*$") (replace-match "")
+		 (org-set-tags nil t))
+	       (end-of-line)
+	       (when blank? (insert "\n"))
+	       (insert "\n" stars " ")
+	       (when (org-string-nw-p split) (insert split))
+	       (insert "\n")
+	       (forward-char -1)))
+	    (t
+	     (end-of-line)
+	     (when blank? (insert "\n"))
+	     (insert "\n" stars " \n")
+	     (forward-char -1))))
+     ;; On regular text, turn line into a headline or split, if
+     ;; appropriate.
+     ((bolp)
+      (insert stars " ")
+      (unless (and blank? (org-previous-line-empty-p))
+        (org-N-empty-lines-before-current (if blank? 1 0))))
      (t
-      ;; Maybe move at the end of the subtree
-      (when (equal arg '(16))
-	(org-up-heading-safe)
-	(org-end-of-subtree t))
-      ;; Insert a heading
-      (save-restriction
-	(widen)
-	(let* ((level nil)
-	       (on-heading (org-at-heading-p))
-	       (empty-line-p (if on-heading
-				 (org-previous-line-empty-p)
-			       ;; We will decide later
-			       nil))
-	       ;; Get a level string to fall back on.
-	       (fix-level
-		(if (org-before-first-heading-p) "*"
-		  (save-excursion
-		    (org-back-to-heading t)
-		    (when (org-previous-line-empty-p) (setq empty-line-p t))
-		    (looking-at org-outline-regexp)
-		    (make-string (1- (length (match-string 0))) ?*))))
-	       (stars
-		(save-excursion
-		  (condition-case nil
-		      (if top "* "
-			(org-back-to-heading invisible-ok)
-			(when (and (not on-heading)
-				   (featurep 'org-inlinetask)
-				   (integerp org-inlinetask-min-level)
-				   (>= (length (match-string 0))
-				       org-inlinetask-min-level))
-			  ;; Find a heading level before the inline
-			  ;; task.
-			  (while (and (setq level (org-up-heading-safe))
-				      (>= level org-inlinetask-min-level)))
-			  (if (org-at-heading-p)
-			      (org-back-to-heading invisible-ok)
-			    (error "This should not happen")))
-			(unless (and (save-excursion
-				       (save-match-data
-					 (org-backward-heading-same-level
-					  1 invisible-ok))
-				       (= (point) (match-beginning 0)))
-				     (not (org-next-line-empty-p)))
-			  (setq empty-line-p (or empty-line-p
-						 (org-previous-line-empty-p))))
-			(match-string 0))
-		    (error (or fix-level "* ")))))
-	       (blank-a (cdr (assq 'heading org-blank-before-new-entry)))
-	       (blank (if (eq blank-a 'auto) empty-line-p blank-a)))
-
-	  ;; If we insert after content, move there and clean up
-	  ;; whitespace.
-	  (when respect-content
-	    (if (not (org-before-first-heading-p))
-		(org-end-of-subtree nil t)
-	      (re-search-forward org-outline-regexp-bol)
-	      (beginning-of-line 0))
-	    (skip-chars-backward " \r\t\n")
-	    (and (not (looking-back "^\\*+" (line-beginning-position)))
-		 (looking-at "[ \t]+") (replace-match ""))
-	    (unless (eobp) (forward-char 1))
-	    (when (looking-at "^\\*")
-	      (unless (bobp) (backward-char 1))
-	      (insert "\n")))
-
-	  ;; If we are splitting, grab the text that should be moved
-	  ;; to the new headline.
-	  (when may-split
-	    (if (org-at-heading-p)
-		;; This is a heading: split intelligently (keeping
-		;; tags).
-		(let ((pos (point)))
-		  (beginning-of-line)
-		  (let ((case-fold-search nil))
-		    (unless (looking-at org-complex-heading-regexp)
-		      (error "This should not happen")))
-		  (when (and (match-beginning 4)
-			     (> pos (match-beginning 4))
-			     (< pos (match-end 4)))
-		    (setq initial-content (buffer-substring pos (match-end 4)))
-		    (goto-char pos)
-		    (delete-region (point) (match-end 4))
-		    (if (looking-at "[ \t]*$")
-			(replace-match "")
-		      (insert (make-string (length initial-content) ?\s)))
-		    (setq initial-content (org-trim initial-content)))
-		  (goto-char pos))
-	      ;; A normal line.
-	      (setq initial-content
-		    (org-trim
-		     (delete-and-extract-region (point) (line-end-position))))))
-
-	  ;; If we are at the beginning of the line, insert before it.
-	  ;; Otherwise, after it.
-	  (cond
-	   ((and (bolp) (looking-at "[ \t]*$")))
-	   ((bolp) (save-excursion (insert "\n")))
-	   (t (end-of-line)
-	      (insert "\n")))
-
-	  ;; Insert the new heading
-	  (insert stars)
-	  (just-one-space)
-	  (insert initial-content)
-	  (unless (and blank (org-previous-line-empty-p))
-	    (org-N-empty-lines-before-current (if blank 1 0)))
-	  ;; Adjust visibility, which may be messed up if we removed
-	  ;; blank lines while previous entry was hidden.
-	  (let ((bol (line-beginning-position)))
-	    (dolist (o (overlays-at (1- bol)))
-	      (when (and (eq (overlay-get o 'invisible) 'outline)
-			 (eq (overlay-end o) bol))
-		(move-overlay o (overlay-start o) (1- bol)))))
-	  (run-hooks 'org-insert-heading-hook)))))))
+      (unless (org-get-alist-option org-M-RET-may-split-line 'headline)
+        (end-of-line))
+      (insert "\n" stars " ")
+      (unless (and blank? (org-previous-line-empty-p))
+        (org-N-empty-lines-before-current (if blank? 1 0))))))
+  (run-hooks 'org-insert-heading-hook))
 
 (defun org-N-empty-lines-before-current (N)
   "Make the number of empty lines before current exactly N.
@@ -9062,18 +8973,14 @@ Optional argument WITH-CASE means sort case-sensitively."
     (org-call-with-arg 'org-sort-entries with-case))))
 
 (defun org-sort-remove-invisible (s)
-  "Remove invisible links from string S."
+  "Remove invisible part of links and emphasis markers from string S."
   (remove-text-properties 0 (length s) org-rm-props s)
-  (while (string-match org-bracket-link-regexp s)
-    (setq s (replace-match (if (match-end 2)
-			       (match-string 3 s)
-			     (match-string 1 s))
-                           t t s)))
-  (let ((st (format " %s " s)))
-    (while (string-match org-emph-re st)
-      (setq st (replace-match (format " %s " (match-string 4 st)) t t st)))
-    (setq s (substring st 1 -1)))
-  s)
+  (replace-regexp-in-string
+   org-verbatim-re (lambda (m) (format "%s " (match-string 4 m)))
+   (replace-regexp-in-string
+    org-emph-re (lambda (m) (format " %s " (match-string 4 m)))
+    (org-link-display-format s)
+    t t) t t))
 
 (defvar org-priority-regexp) ; defined later in the file
 
@@ -11156,7 +11063,8 @@ of matched result, which is either `dedicated' or `fuzzy'."
   (let* ((case-fold-search t)
 	 (origin (point))
 	 (normalized (replace-regexp-in-string "\n[ \t]*" " " s))
-	 (words (org-split-string s "[ \t\n]+"))
+	 (starred (eq (string-to-char normalized) ?*))
+	 (words (split-string (if starred (substring s 1) s)))
 	 (s-multi-re (mapconcat #'regexp-quote words "[ \t]+\\(?:\n[ \t]*\\)?"))
 	 (s-single-re (mapconcat #'regexp-quote words "[ \t]+"))
 	 type)
@@ -11198,109 +11106,104 @@ of matched result, which is either `dedicated' or `fuzzy'."
       ;; Look for a regular expression.
       (funcall (if (derived-mode-p 'org-mode) #'org-occur #'org-do-occur)
 	       (match-string 1 s)))
-     ;; Fuzzy links.
-     (t
-      (let ((starred (eq (string-to-char normalized) ?*)))
-	(cond
-	 ;; Look for targets, only if not in a headline search.
-	 ((and (not starred)
-	       (let ((target (format "<<%s>>" s-multi-re)))
-		 (catch :target-match
-		   (goto-char (point-min))
-		   (while (re-search-forward target nil t)
-		     (backward-char)
-		     (let ((context (org-element-context)))
-		       (when (eq (org-element-type context) 'target)
-			 (setq type 'dedicated)
-			 (goto-char (org-element-property :begin context))
-			 (throw :target-match t))))
-		   nil))))
-	 ;; Look for elements named after S, only if not in a headline
-	 ;; search.
-	 ((and (not starred)
-	       (let ((name (format "^[ \t]*#\\+NAME: +%s[ \t]*$" s-single-re)))
-		 (catch :name-match
-		   (goto-char (point-min))
-		   (while (re-search-forward name nil t)
-		     (let ((element (org-element-at-point)))
-		       (when (equal (org-split-string
-				     (org-element-property :name element)
-				     "[ \t]+")
-				    words)
-			 (setq type 'dedicated)
-			 (beginning-of-line)
-			 (throw :name-match t))))
-		   nil))))
-	 ;; Regular text search.  Prefer headlines in Org mode
-	 ;; buffers.
-	 ((and (derived-mode-p 'org-mode)
-	       (let* ((wspace "[ \t]")
-		      (wspaceopt (concat wspace "*"))
-		      (cookie (concat "\\(?:"
-				      wspaceopt
-				      "\\[[0-9]*\\(?:%\\|/[0-9]*\\)\\]"
-				      wspaceopt
-				      "\\)"))
-		      (sep (concat "\\(?:\\(?:" wspace "\\|" cookie "\\)+\\)"))
-		      (title
-		       (format "\\(?:%s[ \t]+\\)?%s?%s%s?"
-			       org-comment-string
-			       sep
-			       (let ((re (mapconcat #'regexp-quote words sep)))
-				 (if starred (substring re 1) re))
-			       sep))
-		      (exact-title (format "\\`%s\\'" title))
-		      (re (concat org-outline-regexp-bol "+.*" title)))
-		 (goto-char (point-min))
-		 (catch :found
-		   (while (re-search-forward re nil t)
-		     (when (string-match-p exact-title (org-get-heading t t))
-		       (throw :found t)))
-		   nil)))
-	  (beginning-of-line)
-	  (setq type 'dedicated))
-	 ;; Offer to create non-existent headline depending on
-	 ;; `org-link-search-must-match-exact-headline'.
-	 ((and (derived-mode-p 'org-mode)
-	       (not org-link-search-inhibit-query)
-	       (eq org-link-search-must-match-exact-headline 'query-to-create)
-	       (yes-or-no-p "No match - create this as a new heading? "))
-	  (goto-char (point-max))
-	  (unless (bolp) (newline))
-	  (org-insert-heading nil t t)
-	  (insert s "\n")
-	  (beginning-of-line 0))
-	 ;; Only headlines are looked after.  No need to process
-	 ;; further: throw an error.
-	 ((and (derived-mode-p 'org-mode)
-	       (or starred org-link-search-must-match-exact-headline))
-	  (goto-char origin)
-	  (error "No match for fuzzy expression: %s" normalized))
-	 ;; Regular text search.
-	 ((catch :fuzzy-match
-	    (goto-char (point-min))
-	    (while (re-search-forward s-multi-re nil t)
-	      ;; Skip match if it contains AVOID-POS or it is included
-	      ;; in a link with a description but outside the
-	      ;; description.
-	      (unless (or (and avoid-pos
-			       (<= (match-beginning 0) avoid-pos)
-			       (> (match-end 0) avoid-pos))
-			  (and (save-match-data
-				 (org-in-regexp org-bracket-link-regexp))
-			       (match-beginning 3)
-			       (or (> (match-beginning 3) (point))
-				   (<= (match-end 3) (point)))
-			       (org-element-lineage
-				(save-match-data (org-element-context))
-				'(link) t)))
-		(goto-char (match-beginning 0))
-		(setq type 'fuzzy)
-		(throw :fuzzy-match t)))
-	    nil))
-	 ;; All failed.  Throw an error.
-	 (t (goto-char origin)
-	    (error "No match for fuzzy expression: %s" normalized))))))
+     ;; From here, we handle fuzzy links.
+     ;;
+     ;; Look for targets, only if not in a headline search.
+     ((and (not starred)
+	   (let ((target (format "<<%s>>" s-multi-re)))
+	     (catch :target-match
+	       (goto-char (point-min))
+	       (while (re-search-forward target nil t)
+		 (backward-char)
+		 (let ((context (org-element-context)))
+		   (when (eq (org-element-type context) 'target)
+		     (setq type 'dedicated)
+		     (goto-char (org-element-property :begin context))
+		     (throw :target-match t))))
+	       nil))))
+     ;; Look for elements named after S, only if not in a headline
+     ;; search.
+     ((and (not starred)
+	   (let ((name (format "^[ \t]*#\\+NAME: +%s[ \t]*$" s-single-re)))
+	     (catch :name-match
+	       (goto-char (point-min))
+	       (while (re-search-forward name nil t)
+		 (let ((element (org-element-at-point)))
+		   (when (equal words
+				(split-string
+				 (org-element-property :name element)))
+		     (setq type 'dedicated)
+		     (beginning-of-line)
+		     (throw :name-match t))))
+	       nil))))
+     ;; Regular text search.  Prefer headlines in Org mode buffers.
+     ;; Ignore COMMENT keyword, TODO keywords, priority cookies,
+     ;; statistics cookies and tags.
+     ((and (derived-mode-p 'org-mode)
+	   (let ((title-re
+		  (format "%s[ \t]*\\(?:%s[ \t]+\\)?.*%s"
+			  org-outline-regexp-bol
+			  org-comment-string
+			  (mapconcat
+			   (lambda (w) (format "\\<%s\\>" (regexp-quote w)))
+			   words
+			   ".+")))
+		 (cookie-re "\\[[0-9]*\\(?:%\\|/[0-9]*\\)\\]")
+		 (comment-re (format "\\`%s[ \t]+" org-comment-string)))
+	     (goto-char (point-min))
+	     (catch :found
+	       (while (re-search-forward title-re nil t)
+		 (when (equal words
+			      (split-string
+			       (replace-regexp-in-string
+				cookie-re ""
+				(replace-regexp-in-string
+				 comment-re "" (org-get-heading t t)))))
+		   (throw :found t)))
+	       nil)))
+      (beginning-of-line)
+      (setq type 'dedicated))
+     ;; Offer to create non-existent headline depending on
+     ;; `org-link-search-must-match-exact-headline'.
+     ((and (derived-mode-p 'org-mode)
+	   (not org-link-search-inhibit-query)
+	   (eq org-link-search-must-match-exact-headline 'query-to-create)
+	   (yes-or-no-p "No match - create this as a new heading? "))
+      (goto-char (point-max))
+      (unless (bolp) (newline))
+      (org-insert-heading nil t t)
+      (insert s "\n")
+      (beginning-of-line 0))
+     ;; Only headlines are looked after.  No need to process
+     ;; further: throw an error.
+     ((and (derived-mode-p 'org-mode)
+	   (or starred org-link-search-must-match-exact-headline))
+      (goto-char origin)
+      (error "No match for fuzzy expression: %s" normalized))
+     ;; Regular text search.
+     ((catch :fuzzy-match
+	(goto-char (point-min))
+	(while (re-search-forward s-multi-re nil t)
+	  ;; Skip match if it contains AVOID-POS or it is included in
+	  ;; a link with a description but outside the description.
+	  (unless (or (and avoid-pos
+			   (<= (match-beginning 0) avoid-pos)
+			   (> (match-end 0) avoid-pos))
+		      (and (save-match-data
+			     (org-in-regexp org-bracket-link-regexp))
+			   (match-beginning 3)
+			   (or (> (match-beginning 3) (point))
+			       (<= (match-end 3) (point)))
+			   (org-element-lineage
+			    (save-match-data (org-element-context))
+			    '(link) t)))
+	    (goto-char (match-beginning 0))
+	    (setq type 'fuzzy)
+	    (throw :fuzzy-match t)))
+	nil))
+     ;; All failed.  Throw an error.
+     (t (goto-char origin)
+	(error "No match for fuzzy expression: %s" normalized)))
     ;; Disclose surroundings of match, if appropriate.
     (when (and (derived-mode-p 'org-mode) (not stealth))
       (org-show-context 'link-search))
@@ -13332,77 +13235,81 @@ This function is run automatically after each state change to a DONE state."
 			     org-log-repeat)))
       (org-back-to-heading t)
       (org-add-planning-info nil nil 'closed)
-      (let ((end (save-excursion (outline-next-heading) (point))))
+      (let ((end (save-excursion (outline-next-heading) (point)))
+	    (planning-re (regexp-opt
+			  (list org-scheduled-string org-deadline-string))))
 	(while (re-search-forward org-ts-regexp end t)
-	  (when (save-match-data
-		  (or (org-at-planning-p)
-		      (org-at-property-p)
-		      (eq (org-element-type (save-excursion
-					      (backward-char)
-					      (org-element-context)))
-			  'timestamp)))
-	    (let ((type (cond ((match-end 1) org-scheduled-string)
-			      ((match-end 3) org-deadline-string)
-			      (t "Plain:")))
-		  (ts (or (match-string 2) (match-string 4) (match-string 0))))
-	      (cond
-	       ((not
-		 (string-match "\\([.+]\\)?\\(\\+[0-9]+\\)\\([hdwmy]\\)" ts))
-		;; Time-stamps without a repeater are usually skipped.
-		;; However, a SCHEDULED time-stamp without one is
-		;; removed, as it is considered as no longer relevant.
-		(when (equal type org-scheduled-string)
-		  (org-remove-timestamp-with-keyword type)))
-	       (t
-		(let ((n (string-to-number (match-string 2 ts)))
-		      (what (match-string 3 ts)))
-		  (when (equal what "w") (setq n (* n 7) what "d"))
-		  (when (and (equal what "h")
-			     (not (string-match-p "[0-9]\\{1,2\\}:[0-9]\\{2\\}"
-						  ts)))
-		    (user-error
-		     "Cannot repeat in Repeat in %d hour(s) because no hour \
+	  (let* ((ts (match-string 0))
+		 (planning? (org-at-planning-p))
+		 (type (if (not planning?) "Plain:"
+			 (save-excursion
+			   (re-search-backward
+			    planning-re (line-beginning-position) t)
+			   (match-string 0)))))
+	    (cond
+	     ;; Ignore fake time-stamps (e.g., within comments).
+	     ((and (not planning?)
+		   (not (org-at-property-p))
+		   (not (eq 'timestamp
+			    (org-element-type (save-excursion
+						(backward-char)
+						(org-element-context)))))))
+	     ;; Time-stamps without a repeater are usually skipped.
+	     ;; However, a SCHEDULED time-stamp without one is
+	     ;; removed, as it is considered as no longer relevant.
+	     ((not (string-match "\\([.+]\\)?\\(\\+[0-9]+\\)\\([hdwmy]\\)" ts))
+	      (when (equal type org-scheduled-string)
+		(org-remove-timestamp-with-keyword type)))
+	     (t
+	      (let ((n (string-to-number (match-string 2 ts)))
+		    (what (match-string 3 ts)))
+		(when (equal what "w") (setq n (* n 7) what "d"))
+		(when (and (equal what "h")
+			   (not (string-match-p "[0-9]\\{1,2\\}:[0-9]\\{2\\}"
+						ts)))
+		  (user-error
+		   "Cannot repeat in Repeat in %d hour(s) because no hour \
 has been set"
-		     n))
-		  ;; Preparation, see if we need to modify the start
-		  ;; date for the change.
-		  (when (match-end 1)
-		    (let ((time (save-match-data (org-time-string-to-time ts))))
-		      (cond
-		       ((equal (match-string 1 ts) ".")
-			;; Shift starting date to today
-			(org-timestamp-change
-			 (- (org-today) (time-to-days time))
-			 'day))
-		       ((equal (match-string 1 ts) "+")
-			(let ((nshiftmax 10)
-			      (nshift 0))
-			  (while (or (= nshift 0)
-				     (not (time-less-p (current-time) time)))
-			    (when (= (cl-incf nshift) nshiftmax)
-			      (or (y-or-n-p
-				   (format "%d repeater intervals were not \
+		   n))
+		;; Preparation, see if we need to modify the start
+		;; date for the change.
+		(when (match-end 1)
+		  (let ((time (save-match-data (org-time-string-to-time ts))))
+		    (cond
+		     ((equal (match-string 1 ts) ".")
+		      ;; Shift starting date to today
+		      (org-timestamp-change
+		       (- (org-today) (time-to-days time))
+		       'day))
+		     ((equal (match-string 1 ts) "+")
+		      (let ((nshiftmax 10)
+			    (nshift 0))
+			(while (or (= nshift 0)
+				   (not (time-less-p (current-time) time)))
+			  (when (= (cl-incf nshift) nshiftmax)
+			    (or (y-or-n-p
+				 (format "%d repeater intervals were not \
 enough to shift date past today.  Continue? "
-					   nshift))
-				  (user-error "Abort")))
-			    (org-timestamp-change n (cdr (assoc what whata)))
-			    (org-at-timestamp-p t)
-			    (setq ts (match-string 1))
-			    (setq time
-				  (save-match-data
-				    (org-time-string-to-time ts)))))
-			(org-timestamp-change (- n) (cdr (assoc what whata)))
-			;; Rematch, so that we have everything in
-			;; place for the real shift.
-			(org-at-timestamp-p t)
-			(setq ts (match-string 1))
-			(string-match "\\([.+]\\)?\\(\\+[0-9]+\\)\\([hdwmy]\\)"
-				      ts)))))
-		  (save-excursion
-		    (org-timestamp-change n (cdr (assoc what whata)) nil t))
-		  (setq msg
-			(concat
-			 msg type " " org-last-changed-timestamp " ")))))))))
+					 nshift))
+				(user-error "Abort")))
+			  (org-timestamp-change n (cdr (assoc what whata)))
+			  (org-at-timestamp-p t)
+			  (setq ts (match-string 1))
+			  (setq time
+				(save-match-data
+				  (org-time-string-to-time ts)))))
+		      (org-timestamp-change (- n) (cdr (assoc what whata)))
+		      ;; Rematch, so that we have everything in place
+		      ;; for the real shift.
+		      (org-at-timestamp-p t)
+		      (setq ts (match-string 1))
+		      (string-match "\\([.+]\\)?\\(\\+[0-9]+\\)\\([hdwmy]\\)"
+				    ts)))))
+		(save-excursion
+		  (org-timestamp-change n (cdr (assoc what whata)) nil t))
+		(setq msg
+		      (concat
+		       msg type " " org-last-changed-timestamp " "))))))))
       (setq org-log-post-message msg)
       (message "%s" msg))))
 
@@ -19967,7 +19874,6 @@ boundaries."
 (org-defkey org-mode-map "\C-c/"    'org-sparse-tree)   ; Minor-mode reserved
 (org-defkey org-mode-map "\C-c\\"   'org-match-sparse-tree) ; Minor-mode res.
 (org-defkey org-mode-map "\C-c\C-m" 'org-ctrl-c-ret)
-(org-defkey org-mode-map "\M-\C-m"  'org-insert-heading)
 (org-defkey org-mode-map "\C-c\C-xc" 'org-clone-subtree-with-time-shift)
 (org-defkey org-mode-map "\C-c\C-xv" 'org-copy-visible)
 (org-defkey org-mode-map [(control return)] 'org-insert-heading-respect-content)
@@ -21157,8 +21063,8 @@ This command does many different things, depending on context:
 	     ;; Limit to supported contexts.
 	     '(babel-call clock dynamic-block footnote-definition
 			  footnote-reference inline-babel-call inline-src-block
-			  item keyword node-property paragraph plain-list
-			  property-drawer radio-target src-block
+			  inlinetask item keyword node-property paragraph
+			  plain-list property-drawer radio-target src-block
 			  statistics-cookie table table-cell table-row
 			  timestamp)
 	     t))
@@ -21572,15 +21478,18 @@ number of stars to add."
 	       (forward-line)))))))
     (unless toggled (message "Cannot toggle heading from here"))))
 
-(defun org-meta-return (&optional _arg)
+(defun org-meta-return (&optional arg)
   "Insert a new heading or wrap a region in a table.
-Calls `org-insert-heading' or `org-table-wrap-region', depending
-on context.  See the individual commands for more information."
-  (interactive)
+Calls `org-insert-heading', `org-insert-item' or
+`org-table-wrap-region', depending on context.  When called with
+an argument, unconditionally call `org-insert-heading'."
+  (interactive "P")
   (org-check-before-invisible-edit 'insert)
   (or (run-hook-with-args-until-success 'org-metareturn-hook)
-      (call-interactively (if (org-at-table-p) #'org-table-wrap-region
-			    #'org-insert-heading))))
+      (call-interactively (cond (arg #'org-insert-heading)
+				((org-at-table-p) #'org-table-wrap-region)
+				((org-in-item-p) #'org-insert-item)
+				(t #'org-insert-heading)))))
 
 ;;; Menu entries
 
@@ -21814,7 +21723,6 @@ on context.  See the individual commands for more information."
     ("Special views current file"
      ["TODO Tree"  org-show-todo-tree t]
      ["Check Deadlines" org-check-deadlines t]
-     ["Timeline" org-timeline t]
      ["Tags/Property tree" org-match-sparse-tree t])
     "--"
     ["Export/Publish..." org-export-dispatch t]
@@ -22059,10 +21967,9 @@ With prefix arg UNCOMPILED, load the uncompiled versions."
 
 (defun org-in-verbatim-emphasis ()
   (save-match-data
-    (and (org-in-regexp org-emph-re 2)
+    (and (org-in-regexp org-verbatim-re 2)
 	 (>= (point) (match-beginning 3))
-	 (<= (point) (match-end 4))
-	 (member (match-string 3) '("=" "~")))))
+	 (<= (point) (match-end 4)))))
 
 (defun org-overlay-display (ovl text &optional face evap)
   "Make overlay OVL display TEXT with face FACE."

@@ -2097,11 +2097,13 @@ Possible values are: `folded', `children' or `subtree'.  See
   "Return column at which body of ITEM should start."
   (save-excursion
     (goto-char item)
-    (looking-at "[ \t]*\\(\\S-+\\)\\(.*[ \t]+::\\)?\\([ \t]+\\|$\\)")
+    (looking-at "[ \t]*\\(\\S-+\\)\\(.*[ \t]::\\)?\\([ \t]\\|$\\)")
     (if (match-beginning 2)
 	(let ((start (1+ (match-end 2)))
 	      (ind (org-get-indentation)))
-	  (if (> start (+ ind org-list-description-max-indent)) (+ ind 5) start))
+	  (if (> start (+ ind org-list-description-max-indent))
+	      (+ ind 5)
+	    start))
       (+ (progn (goto-char (match-end 1)) (current-column))
 	 (if (and org-list-two-spaces-after-bullet-regexp
 		  (string-match-p org-list-two-spaces-after-bullet-regexp
@@ -2242,6 +2244,7 @@ If CHECKBOX is non-nil, add a checkbox next to the bullet.
 
 Return t when things worked, nil when we are not in an item, or
 item is invisible."
+  (interactive "P")
   (let ((itemp (org-in-item-p))
 	(pos (point)))
     ;; If cursor isn't is a list or if list is invisible, return nil.

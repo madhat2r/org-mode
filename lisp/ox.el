@@ -2007,18 +2007,24 @@ channel.
 Unlike to `org-export-with-backend', this function will
 recursively convert DATA using BACKEND translation table."
   (when (symbolp backend) (setq backend (org-export-get-backend backend)))
-  (org-export-data
-   data
-   ;; Set-up a new communication channel with translations defined in
-   ;; BACKEND as the translate table and a new hash table for
-   ;; memoization.
-   (org-combine-plists
-    info
-    (list :back-end backend
-	  :translate-alist (org-export-get-all-transcoders backend)
-	  ;; Size of the hash table is reduced since this function
-	  ;; will probably be used on small trees.
-	  :exported-data (make-hash-table :test 'eq :size 401)))))
+  ;; Set-up a new communication channel with translations defined in
+  ;; BACKEND as the translate table and a new hash table for
+  ;; memoization.
+  (let ((new-info
+	 (org-combine-plists
+	  info
+	  (list :back-end backend
+		:translate-alist (org-export-get-all-transcoders backend)
+		;; Size of the hash table is reduced since this
+		;; function will probably be used on small trees.
+		:exported-data (make-hash-table :test 'eq :size 401)))))
+    (prog1 (org-export-data data new-info)
+      ;; Preserve `:internal-references', as those do not depend on
+      ;; the back-end used; we need to make sure that any new
+      ;; reference when the temporary back-end was active gets through
+      ;; the default one.
+      (plist-put info :internal-references
+		 (plist-get new-info :internal-references)))))
 
 (defun org-export-expand (blob contents &optional with-affiliated)
   "Expand a parsed element or object to its original state.
@@ -3676,18 +3682,20 @@ the communication channel used for export, as a plist."
   (when (symbolp backend) (setq backend (org-export-get-backend backend)))
   (org-export-barf-if-invalid-backend backend)
   (let ((type (org-element-type data)))
-    (if (memq type '(nil org-data)) (error "No foreign transcoder available")
-      (let* ((all-transcoders (org-export-get-all-transcoders backend))
-	     (transcoder (cdr (assq type all-transcoders))))
-	(if (not (functionp transcoder))
-	    (error "No foreign transcoder available")
-	  (funcall
-	   transcoder data contents
-	   (org-combine-plists
-	    info (list
-		  :back-end backend
-		  :translate-alist all-transcoders
-		  :exported-data (make-hash-table :test #'eq :size 401)))))))))
+    (when (memq type '(nil org-data)) (error "No foreign transcoder available"))
+    (let* ((all-transcoders (org-export-get-all-transcoders backend))
+	   (transcoder (cdr (assq type all-transcoders))))
+      (unless (functionp transcoder) (error "No foreign transcoder available"))
+      (let ((new-info
+	     (org-combine-plists
+	      info (list
+		    :back-end backend
+		    :translate-alist all-transcoders
+		    :exported-data (make-hash-table :test #'eq :size 401)))))
+	;; `:internal-references' are shared across back-ends.
+	(prog1 (funcall transcoder data contents new-info)
+	  (plist-put info :internal-references
+		     (plist-get new-info :internal-references)))))))
 
 
 ;;;; For Export Snippets
@@ -4152,12 +4160,55 @@ the provided rules is non-nil.  The default rule is
 This only applies to links without a description."
   (and (not (org-element-contents link))
        (let ((case-fold-search t))
-	 (catch 'exit
-	   (dolist (rule (or rules org-export-default-inline-image-rule))
-	     (and (string= (org-element-property :type link) (car rule))
-		  (string-match-p (cdr rule)
-				  (org-element-property :path link))
-		  (throw 'exit t)))))))
+	 (cl-some (lambda (rule)
+		    (and (string= (org-element-property :type link) (car rule))
+			 (string-match-p (cdr rule)
+					 (org-element-property :path link))))
+		  (or rules org-export-default-inline-image-rule)))))
+
+(defun org-export-insert-image-links (data info &optional rules)
+  "Insert image links in DATA.
+
+Org syntax do not support nested links.  Nevertheless, some
+export back-ends support image as descriptions of links.  Since
+images are really link to image files, we need to make an
+exception about link nesting.
+
+This function recognizes links whose contents are really images
+and turn them into proper nested links.  It is meant to be used
+as a parse tree filter in back-ends supporting such constructs.
+
+DATA is a parse tree.  INFO is the current state of the export
+process, as a plist.
+
+A description is a valid images if it matches any rule in RULES,
+if non-nil, or `org-export-default-inline-image-rule' otherwise.
+See `org-export-inline-image-p' for more information about the
+structure of RULES.
+
+Return modified DATA."
+  (let ((link-re (format "\\`\\(?:%s\\|%s\\)\\'"
+			 org-plain-link-re
+			 org-angle-link-re))
+	(case-fold-search t))
+    (org-element-map data 'link
+      (lambda (l)
+	(let ((contents (org-element-interpret-data (org-element-contents l))))
+	  (when (and (org-string-nw-p contents)
+		     (string-match link-re contents))
+	    (let ((type (match-string 1 contents))
+		  (path (match-string 2 contents)))
+	      (when (cl-some (lambda (rule)
+			       (and (string= type (car rule))
+				    (string-match-p (cdr rule) path)))
+			     (or rules org-export-default-inline-image-rule))
+		(org-element-set-contents
+		 l
+		 (with-temp-buffer
+		   (save-excursion (insert contents))
+		   (org-element-link-parser))))))))
+      info nil nil t))
+  data)
 
 (defun org-export-resolve-coderef (ref info)
   "Resolve a code reference REF.
@@ -4171,18 +4222,15 @@ error if no block contains REF."
 	(lambda (el)
 	  (with-temp-buffer
 	    (insert (org-trim (org-element-property :value el)))
-	    (let* ((label-fmt (regexp-quote
-			       (or (org-element-property :label-fmt el)
-				   org-coderef-label-format)))
-		   (ref-re
-		    (format "^.*?\\S-.*?\\([ \t]*\\(%s\\)\\)[ \t]*$"
-			    (format label-fmt ref))))
+	    (let* ((label-fmt (or (org-element-property :label-fmt el)
+				  org-coderef-label-format))
+		   (ref-re (org-src-coderef-regexp label-fmt ref)))
 	      ;; Element containing REF is found.  Resolve it to
 	      ;; either a label or a line number, as needed.
 	      (when (re-search-backward ref-re nil t)
-		(cond
-		 ((org-element-property :use-labels el) ref)
-		 (t (+ (or (org-export-get-loc el info) 0) (line-number-at-pos))))))))
+		(if (org-element-property :use-labels el) ref
+		  (+ (or (org-export-get-loc el info) 0)
+		     (line-number-at-pos)))))))
 	info 'first-match)
       (signal 'org-link-broken (list ref))))
 
@@ -5739,6 +5787,12 @@ them."
      ("fr" :ascii "References" :default "Références")
      ("de" :default "Quellen")
      ("es" :default "Referencias"))
+    ("See figure %s"
+     ("fr" :default "cf. figure %s"
+      :html "cf.&nbsp;figure&nbsp;%s" :latex "cf.~figure~%s"))
+    ("See listing %s"
+     ("fr" :default "cf. programme %s"
+      :html "cf.&nbsp;programme&nbsp;%s" :latex "cf.~programme~%s"))
     ("See section %s"
      ("da" :default "jævnfør afsnit %s")
      ("de" :default "siehe Abschnitt %s")
@@ -5751,6 +5805,9 @@ them."
      ("ru" :html "&#1057;&#1084;. &#1088;&#1072;&#1079;&#1076;&#1077;&#1083; %s"
       :utf-8 "См. раздел %s")
      ("zh-CN" :html "&#21442;&#35265;&#31532;%s&#33410;" :utf-8 "参见第%s节"))
+    ("See table %s"
+     ("fr" :default "cf. tableau %s"
+      :html "cf.&nbsp;tableau&nbsp;%s" :latex "cf.~tableau~%s"))
     ("Table"
      ("de" :default "Tabelle")
      ("es" :default "Tabla")

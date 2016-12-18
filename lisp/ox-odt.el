@@ -85,7 +85,8 @@
   :filters-alist '((:filter-parse-tree
 		    . (org-odt--translate-latex-fragments
 		       org-odt--translate-description-lists
-		       org-odt--translate-list-tables)))
+		       org-odt--translate-list-tables
+		       org-odt--translate-image-links)))
   :menu-entry
   '(?o "Export to ODT"
        ((?o "As ODT file" org-odt-export-to-odt)
@@ -847,7 +848,7 @@ ON-OR-OFF                 := t | nil
 For example, with the following configuration
 
 \(setq org-odt-table-styles
-      '((\"TableWithHeaderRowsAndColumns\" \"Custom\"
+      \\='((\"TableWithHeaderRowsAndColumns\" \"Custom\"
          ((use-first-row-styles . t)
           (use-first-column-styles . t)))
         (\"TableWithHeaderColumns\" \"Custom\"
@@ -3686,6 +3687,11 @@ contextual information."
 
 
 ;;; Filters
+
+;;; Images
+
+(defun org-odt--translate-image-links (data _backend info)
+  (org-export-insert-image-links data info org-odt-inline-image-rules))
 
 ;;;; LaTeX fragments
 

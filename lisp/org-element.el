@@ -356,8 +356,8 @@ Don't modify it, set `org-element-affiliated-keywords' instead.")
       ;; a link description.  Also ignore radio-targets and line
       ;; breaks.
       (link bold code entity export-snippet inline-babel-call inline-src-block
-	    italic latex-fragment macro simple-link statistics-cookie
-	    strike-through subscript superscript underline verbatim)
+	    italic latex-fragment macro statistics-cookie strike-through
+	    subscript superscript underline verbatim)
       (paragraph ,@standard-set)
       ;; Remove any variable object from radio target as it would
       ;; prevent it from being properly recognized.
@@ -2754,7 +2754,7 @@ keywords.  Otherwise, return nil.
 Assume point is at the first tilde marker."
   (save-excursion
     (unless (bolp) (backward-char 1))
-    (when (looking-at org-emph-re)
+    (when (looking-at org-verbatim-re)
       (let ((begin (match-beginning 2))
 	    (value (match-string-no-properties 4))
 	    (post-blank (progn (goto-char (match-end 2))
@@ -3765,7 +3765,7 @@ and cdr is a plist with `:value', `:begin', `:end' and
 Assume point is at the first equal sign marker."
   (save-excursion
     (unless (bolp) (backward-char 1))
-    (when (looking-at org-emph-re)
+    (when (looking-at org-verbatim-re)
       (let ((begin (match-beginning 2))
 	    (value (match-string-no-properties 4))
 	    (post-blank (progn (goto-char (match-end 2))
@@ -4430,8 +4430,7 @@ to an appropriate container (e.g., a paragraph)."
 				    (org-element-target-parser)))
 			 (or (and (memq 'timestamp restriction)
 				  (org-element-timestamp-parser))
-			     (and (or (memq 'link restriction)
-				      (memq 'simple-link restriction))
+			     (and (memq 'link restriction)
 				  (org-element-link-parser)))))
 		      (?\\
 		       (if (eq (aref result 1) ?\\)
@@ -4452,8 +4451,7 @@ to an appropriate container (e.g., a paragraph)."
 			     (and (memq 'statistics-cookie restriction)
 				  (org-element-statistics-cookie-parser)))))
 		      ;; This is probably a plain link.
-		      (_ (and (or (memq 'link restriction)
-				  (memq 'simple-link restriction))
+		      (_ (and (memq 'link restriction)
 			      (org-element-link-parser)))))))
 	    (or (eobp) (forward-char))))
 	(cond (found)

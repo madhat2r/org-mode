@@ -43,11 +43,13 @@
 ;; - colnames (default, nil, means "yes")
 ;; - result-params
 ;; - out-file
+;;
 ;; The following are used but not really implemented for SQL:
 ;; - colname-names
 ;; - rownames
 ;; - rowname-names
 ;;
+<<<<<<< HEAD
 ;;
 ;; Engines supported:
 ;; - mysql
@@ -57,6 +59,17 @@
 ;; - postgresql
 ;; - oracle
 ;;
+||||||| merged common ancestors
+=======
+;; Engines supported:
+;; - mysql
+;; - dbi
+;; - mssql
+;; - sqsh
+;; - postgresql
+;; - oracle
+;;
+>>>>>>> 3469830e3d95c6176fb91017463c5ef4140dd1c0
 ;; TODO:
 ;;
 ;; - support for sessions
@@ -125,6 +138,7 @@ SQL Server on Windows and Linux platform."
 			 (when database (format "-d \"%s\"" database))))
 	     " "))
 
+<<<<<<< HEAD
 (defun org-babel-sql-dbstring-sqsh (host user password database)
   "Make sqsh commmand line args for database connection.
 \"sqsh\" is one method to access Sybase or MS SQL via Linux platform"
@@ -136,6 +150,21 @@ SQL Server on Windows and Linux platform."
                           (when database (format "-D \"%s\"" database))))
              " "))
 
+||||||| merged common ancestors
+=======
+(defun org-babel-sql-dbstring-sqsh (host user password database)
+  "Make sqsh commmand line args for database connection.
+\"sqsh\" is one method to access Sybase or MS SQL via Linux platform"
+  (mapconcat #'identity
+             (delq nil
+                   (list  (when host     (format "-S \"%s\"" host))
+                          (when user     (format "-U \"%s\"" user))
+                          (when password (format "-P \"%s\"" password))
+                          (when database (format "-D \"%s\"" database))))
+             " "))
+
+
+>>>>>>> 3469830e3d95c6176fb91017463c5ef4140dd1c0
 (defun org-babel-sql-convert-standard-filename (file)
   "Convert the file name to OS standard.
 If in Cygwin environment, uses Cygwin specific function to
@@ -207,7 +236,21 @@ footer=off -F \"\t\"  %s -f %s -o %s %s"
 				  (org-babel-process-file-name in-file)
 				  (org-babel-process-file-name out-file)
 				  (or cmdline "")))
+<<<<<<< HEAD
 		    (`oracle (format
+||||||| merged common ancestors
+                    (`oracle (format
+=======
+		    (`sqsh (format "sqsh %s %s -i %s -o %s -m csv"
+				   (or cmdline "")
+				   (org-babel-sql-dbstring-sqsh
+				    dbhost dbuser dbpassword database)
+				   (org-babel-sql-convert-standard-filename
+				    (org-babel-process-file-name in-file))
+				   (org-babel-sql-convert-standard-filename
+				    (org-babel-process-file-name out-file))))
+                    (`oracle (format
+>>>>>>> 3469830e3d95c6176fb91017463c5ef4140dd1c0
 			      "sqlplus -s %s < %s > %s"
 			      (org-babel-sql-dbstring-oracle
 			       dbhost dbport dbuser dbpassword database)
@@ -231,15 +274,31 @@ SET MARKUP HTML OFF SPOOL OFF
 SET COLSEP '|'
 
 ")
+<<<<<<< HEAD
          ((or `mssql `sqsh ) "SET NOCOUNT ON
+||||||| merged common ancestors
+	 (`mssql "SET NOCOUNT ON
+=======
+	 ((or `mssql `sqsh) "SET NOCOUNT ON
+>>>>>>> 3469830e3d95c6176fb91017463c5ef4140dd1c0
 
 ")
+<<<<<<< HEAD
          (_ ""))
        (org-babel-expand-body:sql body params)
        ;; sqsh requires "go" inserted at EOF
        (if (equal (intern engine) `sqsh)
            "\ngo"
          "")))
+||||||| merged common ancestors
+	 (_ ""))
+       (org-babel-expand-body:sql body params)))
+=======
+	 (_ ""))
+       (org-babel-expand-body:sql body params)
+       ;; "sqsh" requires "go" inserted at EOF.
+       (if (string= engine "sqsh") "\ngo" "")))
+>>>>>>> 3469830e3d95c6176fb91017463c5ef4140dd1c0
     (org-babel-eval command "")
     (org-babel-result-cond result-params
       (with-temp-buffer
@@ -271,10 +330,16 @@ SET COLSEP '|'
 	      (goto-char (point-max))
 	      (forward-char -1))
 	    (write-file out-file))))
+<<<<<<< HEAD
 	(cond ((equal (intern engine) 'sqsh)
 	       (org-table-import out-file '(4)))
 	      (t
 	       (org-table-import out-file '(16))))
+||||||| merged common ancestors
+	(org-table-import out-file '(16))
+=======
+	(org-table-import out-file (if (string= engine "sqsh") '(4) '(16)))
+>>>>>>> 3469830e3d95c6176fb91017463c5ef4140dd1c0
 	(org-babel-reassemble-table
 	 (mapcar (lambda (x)
 		   (if (string= (car x) header-delim)
